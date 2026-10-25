@@ -78,7 +78,7 @@ public class TradingService {
                 if (!results.next()) {
                     throw new SQLException("The selected stock could not be found.");
                 }
-                return String.format("Last: $%s  |  Volume: %d  |  High: $%s  |  Low: $%s  |  Trades: %d",
+                return String.format("Market price: $%s  |  Volume: %d  |  High: $%s  |  Low: $%s  |  Trades: %d",
                         results.getBigDecimal("current_price"), results.getLong("volume"),
                         results.getBigDecimal("high_price"), results.getBigDecimal("low_price"),
                         results.getInt("trade_count"));

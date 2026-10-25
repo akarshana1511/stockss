@@ -44,8 +44,10 @@ Create an account in the application. New accounts receive $10,000 of simulated 
 - Buy orders reserve their limit-price value until they fill. Unfilled sell orders reserve shares from further sell orders.
 - Each fill updates balances, holdings, the stock's last price, trades, and both users' transaction histories atomically.
 - The market view shows the selected stock's aggregated open order book. The portfolio, open orders, and trade history are available in their own tabs.
-- The market view also shows the last traded price, all-time traded volume, high/low trade prices, and number of trades.
+- Simulated market prices move randomly by up to 1% every five seconds and are saved to the database. This ticker runs in a scheduled background thread; updates are serialized through the database worker. Simulated price changes do not execute trades or change open limit orders.
+- The market view also shows the current simulated market price, all-time traded volume, high/low trade prices, and number of trades.
 - Trade history can be exported as a CSV file.
+- Database operations run on a dedicated background worker so login, order placement, refreshes, and exports do not block the JavaFX interface. The worker serializes JDBC operations because the app uses one shared database connection.
 
 ## Tests
 

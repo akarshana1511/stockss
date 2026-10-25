@@ -8,6 +8,7 @@ com\stockexchange\model\enums\OrderStatus.class
 com\stockexchange\model\Transaction.class
 com\stockexchange\service\PortfolioService.class
 com\stockexchange\service\MatchingEngine.class
+com\stockexchange\Main$2.class
 com\stockexchange\model\Trade.class
 com\stockexchange\service\AccountService.class
 com\stockexchange\service\TransactionService.class
@@ -15,6 +16,7 @@ com\stockexchange\exception\InsufficientBalanceException.class
 com\stockexchange\model\Holding.class
 com\stockexchange\service\TradingService.class
 com\stockexchange\service\UserService.class
+com\stockexchange\Main$DashboardData.class
 com\stockexchange\Main.class
 com\stockexchange\model\User.class
 com\stockexchange\exception\InvalidOrderException.class

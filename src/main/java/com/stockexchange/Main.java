@@ -1,7 +1,6 @@
 package com.stockexchange;
 
 import com.stockexchange.database.DatabaseConnection;
-import com.stockexchange.exception.UserNotFoundException;
 import com.stockexchange.model.Holding;
 import com.stockexchange.model.Stock;
 import com.stockexchange.model.User;
@@ -33,6 +32,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import javafx.concurrent.Task;
 
 import java.io.File;
 import java.math.BigDecimal;
@@ -41,15 +41,27 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class Main extends Application {
+    private static final Logger LOGGER = Logger.getLogger(Main.class.getName());
+    private static final long MARKET_UPDATE_INTERVAL_SECONDS = 5;
     private Connection connection;
     private UserService userService;
     private StockService stockService;
     private PortfolioService portfolioService;
     private TradingService tradingService;
     private TransactionService transactionService;
-    private User currentUser;
+    private volatile User currentUser;
     private ListView<Stock> stockList;
     private TextArea marketInfo;
     private TextArea portfolioInfo;
@@ -60,25 +72,46 @@ public class Main extends Application {
     private TextField priceField;
     private ComboBox<OrderType> orderType;
     private Stage stage;
+    private ExecutorService databaseWorker;
+    private ScheduledExecutorService marketScheduler;
+    private ScheduledFuture<?> marketTicker;
+    private final AtomicBoolean marketTickQueued = new AtomicBoolean();
+    private Button placeOrderButton;
+    private Button refreshButton;
+    private Button exportButton;
+    private Label orderStatus;
 
     @Override
     public void start(Stage primaryStage) {
         stage = primaryStage;
         stage.setTitle("Stock Exchange System");
-        try {
-            connection = DatabaseConnection.getConnection();
+        databaseWorker = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "stock-exchange-database");
+            thread.setDaemon(true);
+            return thread;
+        });
+        Label loading = new Label("Connecting to the market...");
+        loading.getStyleClass().add("section-title");
+        BorderPane loadingRoot = new BorderPane(loading);
+        loadingRoot.setPadding(new Insets(40));
+        Scene loadingScene = new Scene(loadingRoot, 600, 360);
+        applyStyles(loadingScene);
+        stage.setScene(loadingScene);
+        stage.show();
+        runDatabaseTask(DatabaseConnection::getConnection, connected -> {
+            connection = connected;
             userService = new UserService(connection);
             stockService = new StockService(connection);
             portfolioService = new PortfolioService(connection);
             tradingService = new TradingService(connection);
             transactionService = new TransactionService(connection);
             showAuthentication();
-        } catch (SQLException exception) {
+        }, exception -> {
             showError("Database connection failed",
                     exception.getMessage() + "\n\nCheck MySQL is running, the stock_exchange database "
                             + "schema is installed, and MYSQL_URL / MYSQL_USER / MYSQL_PASSWORD are configured.");
             stage.close();
-        }
+        });
     }
 
     private void showAuthentication() {
@@ -119,28 +152,47 @@ public class Main extends Application {
 
         login.setOnAction(event -> {
             char[] enteredPassword = password.getText().toCharArray();
-            try {
-                currentUser = userService.authenticate(email.getText(), enteredPassword);
-                showTradingScreen();
-            } catch (SQLException | UserNotFoundException exception) {
-                status.setText(exception.getMessage());
-            } finally {
+            login.setDisable(true);
+            register.setDisable(true);
+            status.setText("Signing in...");
+            String enteredEmail = email.getText();
+            runDatabaseTask(() -> userService.authenticate(enteredEmail, enteredPassword), user -> {
                 java.util.Arrays.fill(enteredPassword, '\0');
                 password.clear();
-            }
+                currentUser = user;
+                showTradingScreen();
+                startMarketTicker();
+            }, exception -> {
+                java.util.Arrays.fill(enteredPassword, '\0');
+                password.clear();
+                status.setText(exception.getMessage());
+                login.setDisable(false);
+                register.setDisable(false);
+            });
         });
         register.setOnAction(event -> {
             char[] enteredPassword = password.getText().toCharArray();
-            try {
-                userService.register(name.getText(), email.getText(), enteredPassword);
-                currentUser = userService.authenticate(email.getText(), enteredPassword);
-                showTradingScreen();
-            } catch (SQLException | UserNotFoundException | IllegalArgumentException exception) {
-                status.setText(exception.getMessage());
-            } finally {
+            String enteredEmail = email.getText();
+            String enteredName = name.getText();
+            login.setDisable(true);
+            register.setDisable(true);
+            status.setText("Creating your account...");
+            runDatabaseTask(() -> {
+                userService.register(enteredName, enteredEmail, enteredPassword);
+                return userService.authenticate(enteredEmail, enteredPassword);
+            }, user -> {
                 java.util.Arrays.fill(enteredPassword, '\0');
                 password.clear();
-            }
+                currentUser = user;
+                showTradingScreen();
+                startMarketTicker();
+            }, exception -> {
+                java.util.Arrays.fill(enteredPassword, '\0');
+                password.clear();
+                status.setText(exception.getMessage());
+                login.setDisable(false);
+                register.setDisable(false);
+            });
         });
 
         HBox actions = new HBox(10, login, register);
@@ -160,7 +212,7 @@ public class Main extends Application {
         stage.show();
     }
 
-    private void showTradingScreen() throws SQLException {
+    private void showTradingScreen() {
         stockList = new ListView<>();
         stockList.setPrefHeight(430);
         stockList.getStyleClass().add("stock-list");
@@ -211,31 +263,44 @@ public class Main extends Application {
         quantityField.getStyleClass().add("input-field");
         priceField.getStyleClass().add("input-field");
         orderType.getStyleClass().add("input-field");
-        Button placeOrder = new Button("Place limit order");
-        placeOrder.getStyleClass().add("primary-button");
-        placeOrder.setMaxWidth(Double.MAX_VALUE);
-        Button refresh = new Button("Refresh");
-        refresh.getStyleClass().add("toolbar-button");
-        Button export = new Button("Export history CSV");
-        export.getStyleClass().add("toolbar-button");
+        placeOrderButton = new Button("Place limit order");
+        placeOrderButton.getStyleClass().add("primary-button");
+        placeOrderButton.setMaxWidth(Double.MAX_VALUE);
+        orderStatus = new Label("Order submissions run in the background.");
+        orderStatus.getStyleClass().add("status-text");
+        refreshButton = new Button("Refresh");
+        refreshButton.getStyleClass().add("toolbar-button");
+        exportButton = new Button("Export history CSV");
+        exportButton.getStyleClass().add("toolbar-button");
         Button logout = new Button("Log out");
         logout.getStyleClass().add("toolbar-button");
-        placeOrder.setOnAction(event -> placeOrder());
-        refresh.setOnAction(event -> refreshViews());
-        export.setOnAction(event -> exportHistory());
+        placeOrderButton.setOnAction(event -> placeOrder());
+        refreshButton.setOnAction(event -> refreshViews());
+        exportButton.setOnAction(event -> exportHistory());
         logout.setOnAction(event -> {
+            stopMarketTicker();
             currentUser = null;
             showAuthentication();
         });
         stockList.getSelectionModel().selectedItemProperty().addListener(
-                (observable, oldStock, newStock) -> showOrderBook(newStock));
+                (observable, oldStock, newStock) -> {
+                    if (newStock != null && (oldStock == null
+                            || oldStock.getStockId() != newStock.getStockId())) {
+                        showOrderBook(newStock);
+                    }
+                });
 
         VBox orderEntry = new VBox(10, fieldLabel("SIDE", orderType),
-                fieldLabel("QUANTITY", quantityField), fieldLabel("LIMIT PRICE", priceField), placeOrder);
+                fieldLabel("QUANTITY", quantityField), fieldLabel("LIMIT PRICE", priceField),
+                placeOrderButton, orderStatus);
         Node orderCard = card("Place an order", orderEntry);
         orderCard.getStyleClass().add("order-card");
+        Label tickerStatus = new Label("Simulated prices update every "
+                + MARKET_UPDATE_INTERVAL_SECONDS + " seconds.");
+        tickerStatus.getStyleClass().add("muted-text");
+        VBox marketWatch = new VBox(8, tickerStatus, stockList);
         VBox marketPane = new VBox(16,
-                card("Market watch", stockList),
+                card("Market watch", marketWatch),
                 card("Order book & market stats", marketInfo));
         marketPane.setPrefWidth(480);
         marketPane.setMinWidth(340);
@@ -263,7 +328,7 @@ public class Main extends Application {
         VBox identity = new VBox(3, brand, welcome);
         HBox spacer = new HBox();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox accountActions = new HBox(14, accountInfo, refresh, export, logout);
+        HBox accountActions = new HBox(14, accountInfo, refreshButton, exportButton, logout);
         accountActions.setAlignment(Pos.CENTER_RIGHT);
         HBox header = new HBox(24, identity, spacer, accountActions);
         header.getStyleClass().add("topbar");
@@ -328,55 +393,154 @@ public class Main extends Application {
         try {
             int quantity = Integer.parseInt(quantityField.getText().trim());
             BigDecimal price = new BigDecimal(priceField.getText().trim());
-            int fills = tradingService.placeOrder(currentUser.getUserId(), selectedStock.getStockId(),
-                    orderType.getValue(), quantity, price);
-            quantityField.clear();
-            showInformation("Order placed", fills == 0
-                    ? "Your order is now on the order book."
-                    : "Order placed. " + fills + " trade(s) executed; any remaining quantity is on the book.");
-            refreshViews();
+            User user = currentUser;
+            int userId = user.getUserId();
+            int stockId = selectedStock.getStockId();
+            OrderType type = orderType.getValue();
+            placeOrderButton.setDisable(true);
+            orderStatus.setText("Submitting order...");
+            runDatabaseTask(() -> tradingService.placeOrder(userId, stockId, type, quantity, price),
+                    fills -> {
+                        quantityField.clear();
+                        placeOrderButton.setDisable(false);
+                        orderStatus.setText(fills == 0 ? "Order is now on the book."
+                                : fills + " trade(s) executed; any remainder is on the book.");
+                        refreshViews();
+                    }, exception -> {
+                        placeOrderButton.setDisable(false);
+                        orderStatus.setText("Order failed.");
+                        showError("Order could not be placed", exception.getMessage());
+                    });
         } catch (NumberFormatException exception) {
             showError("Invalid order", "Enter a whole-number quantity and a valid positive price.");
-        } catch (SQLException | IllegalArgumentException exception) {
-            showError("Order could not be placed", exception.getMessage());
         }
     }
 
     private void refreshViews() {
-        try {
-            List<Stock> stocks = stockService.getAllStocks();
-            Stock selected = stockList.getSelectionModel().getSelectedItem();
-            stockList.setItems(FXCollections.observableArrayList(stocks));
-            if (selected != null) {
-                stocks.stream().filter(stock -> stock.getStockId() == selected.getStockId())
-                        .findFirst().ifPresent(stock -> stockList.getSelectionModel().select(stock));
-            }
-            refreshAccountInfo();
-            portfolioInfo.setText(formatPortfolio(portfolioService.getUserPortfolio(currentUser), stocks));
-            ordersInfo.setText(formatLines(tradingService.getOpenOrders(currentUser.getUserId()),
-                    "No pending orders."));
-            historyInfo.setText(formatLines(transactionService.getTransactionSummary(currentUser),
-                    "No trades yet."));
-            showOrderBook(stockList.getSelectionModel().getSelectedItem());
-        } catch (SQLException exception) {
-            showError("Could not refresh", exception.getMessage());
+        if (currentUser == null) {
+            return;
         }
+        User user = currentUser;
+        int userId = user.getUserId();
+        int selectedStockId = stockList.getSelectionModel().getSelectedItem() == null
+                ? -1 : stockList.getSelectionModel().getSelectedItem().getStockId();
+        refreshButton.setDisable(true);
+        runDatabaseTask(() -> loadDashboard(user, selectedStockId), dashboard -> {
+            if (currentUser == null || currentUser.getUserId() != userId) {
+                return;
+            }
+            refreshButton.setDisable(false);
+            Stock selected = stockList.getSelectionModel().getSelectedItem();
+            stockList.setItems(FXCollections.observableArrayList(dashboard.stocks()));
+            Stock selectedAgain = selected == null ? null : dashboard.stocks().stream()
+                    .filter(stock -> stock.getStockId() == selected.getStockId())
+                    .findFirst().orElse(null);
+            if (selectedAgain != null) {
+                stockList.getSelectionModel().select(selectedAgain);
+            } else if (!dashboard.stocks().isEmpty()) {
+                stockList.getSelectionModel().select(0);
+            }
+            accountInfo.setText(dashboard.accountSummary());
+            portfolioInfo.setText(dashboard.portfolio());
+            ordersInfo.setText(dashboard.openOrders());
+            historyInfo.setText(dashboard.history());
+            Stock nowSelected = stockList.getSelectionModel().getSelectedItem();
+            if (nowSelected != null) {
+                if (selectedStockId == nowSelected.getStockId()
+                        && selectedStockId == dashboard.marketStockId()) {
+                    marketInfo.setText(dashboard.marketInfo());
+                } else {
+                    showOrderBook(nowSelected);
+                }
+            }
+        }, exception -> {
+            refreshButton.setDisable(false);
+            showError("Could not refresh", exception.getMessage());
+        });
     }
 
-    private void refreshAccountInfo() throws SQLException {
+    private DashboardData loadDashboard(User user, int selectedStockId) throws SQLException {
+        int userId = user.getUserId();
+        List<Stock> stocks = stockService.getAllStocks();
+        List<Holding> holdings = portfolioService.getUserPortfolio(user);
+        List<String> openOrders = tradingService.getOpenOrders(userId);
+        List<String> transactions = transactionService.getTransactionSummary(user);
+
+        String accountSummary;
         String sql = "SELECT balance, reserved_balance FROM users WHERE user_id = ?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setInt(1, currentUser.getUserId());
+            statement.setInt(1, userId);
             try (ResultSet results = statement.executeQuery()) {
                 if (!results.next()) {
                     throw new SQLException("The signed-in account could not be loaded.");
                 }
                 BigDecimal balance = results.getBigDecimal("balance");
                 BigDecimal reserved = results.getBigDecimal("reserved_balance");
-                accountInfo.setText(String.format("%s  |  Available: $%s  |  Reserved: $%s",
-                        currentUser.getName(), balance.subtract(reserved), reserved));
+                accountSummary = String.format("%s  |  Available: $%s  |  Reserved: $%s",
+                        user.getName(), balance.subtract(reserved), reserved);
             }
         }
+
+        String market = "";
+        if (selectedStockId != -1) {
+            market = "MARKET STATISTICS\n" + tradingService.getMarketStatistics(selectedStockId)
+                    + "\n\nPRICE-TIME PRIORITY\n"
+                    + formatLines(tradingService.getOrderBook(selectedStockId), "No open orders.");
+        }
+        return new DashboardData(stocks, accountSummary, formatPortfolio(holdings, stocks),
+                formatLines(openOrders, "No pending orders."),
+                formatLines(transactions, "No trades yet."), selectedStockId, market);
+    }
+
+    private void startMarketTicker() {
+        stopMarketTicker();
+        marketScheduler = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "simulated-market-ticker");
+            thread.setDaemon(true);
+            return thread;
+        });
+        marketTicker = marketScheduler.scheduleAtFixedRate(() -> {
+            if (currentUser == null || !marketTickQueued.compareAndSet(false, true)) {
+                return;
+            }
+            runDatabaseTask(stockService::simulatePriceTick, stocks -> {
+                marketTickQueued.set(false);
+                if (currentUser != null && stockList != null) {
+                    updateMarketPrices(stocks);
+                }
+            }, exception -> {
+                marketTickQueued.set(false);
+                LOGGER.log(Level.WARNING, "Could not update simulated market prices.", exception);
+            });
+        }, MARKET_UPDATE_INTERVAL_SECONDS, MARKET_UPDATE_INTERVAL_SECONDS, TimeUnit.SECONDS);
+    }
+
+    private void stopMarketTicker() {
+        if (marketTicker != null) {
+            marketTicker.cancel(false);
+            marketTicker = null;
+        }
+        if (marketScheduler != null) {
+            marketScheduler.shutdownNow();
+            marketScheduler = null;
+        }
+        marketTickQueued.set(false);
+    }
+
+    private void updateMarketPrices(List<Stock> stocks) {
+        Stock previousSelection = stockList.getSelectionModel().getSelectedItem();
+        stockList.setItems(FXCollections.observableArrayList(stocks));
+        if (previousSelection == null) {
+            if (!stocks.isEmpty()) {
+                stockList.getSelectionModel().select(0);
+            }
+            return;
+        }
+        stocks.stream()
+                .filter(stock -> stock.getStockId() == previousSelection.getStockId())
+                .findFirst()
+                .ifPresentOrElse(stock -> stockList.getSelectionModel().select(stock),
+                        () -> stockList.getSelectionModel().clearSelection());
     }
 
     private String formatPortfolio(List<Holding> holdings, List<Stock> stocks) {
@@ -402,14 +566,18 @@ public class Main extends Application {
         if (stock == null || marketInfo == null) {
             return;
         }
-        try {
-            marketInfo.setText("MARKET STATISTICS\n"
-                    + tradingService.getMarketStatistics(stock.getStockId())
-                    + "\n\nPRICE-TIME PRIORITY\n"
-                    + formatLines(tradingService.getOrderBook(stock.getStockId()), "No open orders."));
-        } catch (SQLException exception) {
-            showError("Could not load order book", exception.getMessage());
-        }
+        int stockId = stock.getStockId();
+        marketInfo.setText("Loading market data...");
+        runDatabaseTask(() -> "MARKET STATISTICS\n"
+                        + tradingService.getMarketStatistics(stockId)
+                        + "\n\nPRICE-TIME PRIORITY\n"
+                        + formatLines(tradingService.getOrderBook(stockId), "No open orders."),
+                info -> {
+                    Stock selected = stockList.getSelectionModel().getSelectedItem();
+                    if (selected != null && selected.getStockId() == stockId) {
+                        marketInfo.setText(info);
+                    }
+                }, exception -> showError("Could not load order book", exception.getMessage()));
     }
 
     private void exportHistory() {
@@ -421,12 +589,42 @@ public class Main extends Application {
         if (file == null) {
             return;
         }
-        try {
-            transactionService.exportTransactions(currentUser, file.getAbsolutePath());
-            showInformation("Export complete", "Trade history saved to " + file.getAbsolutePath());
-        } catch (SQLException exception) {
+        User user = currentUser;
+        exportButton.setDisable(true);
+        runDatabaseTask(() -> {
+            transactionService.exportTransactions(user, file.getAbsolutePath());
+            return file.getAbsolutePath();
+        }, path -> {
+            exportButton.setDisable(false);
+            showInformation("Export complete", "Trade history saved to " + path);
+        }, exception -> {
+            exportButton.setDisable(false);
             showError("Export failed", exception.getMessage());
+        });
+    }
+
+    private <T> void runDatabaseTask(Callable<T> operation, Consumer<T> onSuccess,
+                                    Consumer<Exception> onFailure) {
+        Task<T> task = new Task<>() {
+            @Override
+            protected T call() throws Exception {
+                return operation.call();
+            }
+        };
+        task.setOnSucceeded(event -> onSuccess.accept(task.getValue()));
+        task.setOnFailed(event -> onFailure.accept(asException(task.getException())));
+        try {
+            databaseWorker.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException exception) {
+            onFailure.accept(exception);
         }
+    }
+
+    private Exception asException(Throwable throwable) {
+        if (throwable instanceof Exception exception) {
+            return exception;
+        }
+        return new RuntimeException(throwable);
     }
 
     private void showError(String title, String message) {
@@ -446,10 +644,28 @@ public class Main extends Application {
     }
 
     @Override
-    public void stop() throws SQLException {
-        if (connection != null && !connection.isClosed()) {
-            connection.close();
+    public void stop() {
+        stopMarketTicker();
+        if (databaseWorker != null) {
+            try {
+                databaseWorker.execute(() -> {
+                    try {
+                        if (connection != null && !connection.isClosed()) {
+                            connection.close();
+                        }
+                    } catch (SQLException exception) {
+                        LOGGER.log(Level.SEVERE, "Could not close database connection.", exception);
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException exception) {
+                LOGGER.log(Level.WARNING, "Database worker stopped before connection cleanup.", exception);
+            }
+            databaseWorker.shutdown();
         }
+    }
+
+    private record DashboardData(List<Stock> stocks, String accountSummary, String portfolio,
+                                 String openOrders, String history, int marketStockId, String marketInfo) {
     }
 
     public static void main(String[] args) {
