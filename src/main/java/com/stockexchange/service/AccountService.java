@@ -9,6 +9,7 @@ import com.stockexchange.model.User;
 import com.stockexchange.model.enums.OrderType;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -19,7 +20,7 @@ public class AccountService {
 
     public void addUser(User user) {
         users.put(user.getUserId(), user);
-        userHoldings.put(user.getUserId(), new HashMap<>());
+        userHoldings.computeIfAbsent(user.getUserId(), ignored -> new HashMap<>());
     }
 
     public User getUser(int userId) {
@@ -75,13 +76,16 @@ public class AccountService {
         int newQuantity = buyerHolding.getQuantity() + quantity;
         BigDecimal totalCost = buyerHolding.getAveragePrice().multiply(BigDecimal.valueOf(buyerHolding.getQuantity()))
                 .add(price.multiply(BigDecimal.valueOf(quantity)));
-        BigDecimal newAvgPrice = totalCost.divide(BigDecimal.valueOf(newQuantity), BigDecimal.ROUND_HALF_UP);
+        BigDecimal newAvgPrice = totalCost.divide(BigDecimal.valueOf(newQuantity), 4, RoundingMode.HALF_UP);
         buyerHolding.setQuantity(newQuantity);
         buyerHolding.setAveragePrice(newAvgPrice);
 
         // Update seller holdings
         Map<Integer, Holding> sellerHoldings = userHoldings.get(seller.getUserId());
         Holding sellerHolding = sellerHoldings.get(sellOrder.getStockId());
+        if (sellerHolding == null || sellerHolding.getQuantity() < quantity) {
+            throw new IllegalArgumentException("Seller has insufficient stock holdings.");
+        }
         sellerHolding.setQuantity(sellerHolding.getQuantity() - quantity);
     }
 }

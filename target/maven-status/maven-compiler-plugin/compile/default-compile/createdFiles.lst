@@ -13,6 +13,7 @@ com\stockexchange\service\AccountService.class
 com\stockexchange\service\TransactionService.class
 com\stockexchange\exception\InsufficientBalanceException.class
 com\stockexchange\model\Holding.class
+com\stockexchange\service\TradingService.class
 com\stockexchange\service\UserService.class
 com\stockexchange\Main.class
 com\stockexchange\model\User.class
@@ -22,4 +23,5 @@ com\stockexchange\service\OrderBook.class
 com\stockexchange\exception\UserNotFoundException.class
 com\stockexchange\model\Stock.class
 com\stockexchange\service\StockService.class
+com\stockexchange\Main$1.class
 com\stockexchange\model\enums\OrderType.class

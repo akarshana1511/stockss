@@ -1,116 +1,56 @@
 # Stock Exchange System
 
-## Project Overview
-The Stock Exchange System is a Java-based application designed to facilitate trading of stocks in a simulated environment. It provides functionalities for users to manage their portfolios, execute trades, and view transaction histories.
+A JavaFX stock-trading simulation backed by MySQL and JDBC. Users can create an account, browse listed stocks, place limit buy/sell orders, view their portfolio and open orders, and export executed trades.
 
-## Objective
-To create a robust stock trading application that allows users to buy and sell stocks while ensuring data integrity and performance through efficient algorithms and database management.
+## Requirements
 
-## Features
-- User Registration and Login
-- Stock Trading (Buy/Sell)
-- Portfolio Management
-- Transaction History
-- Admin Stock Management
-- CSV Export of Transaction History
-
-## Technologies Used
-- Java 17
+- JDK 17
 - Maven
-- JavaFX
-- MySQL
-- JDBC
+- MySQL 8+
 
-## System Architecture
-The application follows a layered architecture:
-- **Presentation Layer:** JavaFX GUI
-- **Business Logic Layer:** Services and Matching Engine
-- **Data Access Layer:** DAO classes for database interaction
+## Database setup
 
-## Project Structure
-```
-StockExchangeSystem/
-├── database/
-│   ├── schema.sql
-│   └── sample_data.sql
-├── src/
-│   ├── main/
-│   │   ├── java/
-│   │   │   ├── com/stockexchange/
-│   │   │   │   ├── model/
-│   │   │   │   ├── service/
-│   │   │   │   ├── database/
-│   │   │   │   └── exception/
-│   │   └── resources/
-│   └── test/
-│       └── java/
-└── pom.xml
+1. Start MySQL.
+2. Execute `database/schema.sql` to create the `stock_exchange` database and tables.
+3. Execute `database/sample_data.sql` to insert the initial stock listings.
+   If you already have the earlier database schema installed, execute
+   `database/migration_add_transaction_price.sql` once before running the updated app.
+4. Configure the database connection using environment variables:
+
+   ```powershell
+   $env:MYSQL_URL = "jdbc:mysql://localhost:3306/stock_exchange"
+   $env:MYSQL_USER = "root"
+   $env:MYSQL_PASSWORD = "<your-local-mysql-password>"
+   ```
+
+   Alternatively, set `mysql.url`, `mysql.username`, and `mysql.password` in `src/main/resources/com/stockexchange/application.properties`. Environment variables take precedence.
+
+## Run
+
+From the project directory:
+
+```powershell
+mvn clean javafx:run
 ```
 
-## Database Setup
-1. Create a MySQL database named `stock_exchange`.
-2. Execute `schema.sql` to create the necessary tables.
-3. Execute `sample_data.sql` to populate initial stock data.
+Create an account in the application. New accounts receive $10,000 of simulated funds. Passwords are stored as PBKDF2 hashes.
 
-## MySQL Configuration
-- Ensure MySQL is running and accessible.
-- Update the database connection details in `DatabaseConnection.java` if necessary.
+## Trading behavior
 
-## How to Run the Project
-1. Clone the repository.
-2. Navigate to the project directory.
-3. Use Maven to build the project: `mvn clean install`.
-4. Run the application using JavaFX.
+- Buy orders are ranked by highest price, then earliest submission.
+- Sell orders are ranked by lowest price, then earliest submission.
+- Orders execute when the highest bid meets or exceeds the lowest ask. Trades execute at the resting order's limit price.
+- Orders support partial fills; unfilled quantities remain on the book.
+- Buy orders reserve their limit-price value until they fill. Unfilled sell orders reserve shares from further sell orders.
+- Each fill updates balances, holdings, the stock's last price, trades, and both users' transaction histories atomically.
+- The market view shows the selected stock's aggregated open order book. The portfolio, open orders, and trade history are available in their own tabs.
+- The market view also shows the last traded price, all-time traded volume, high/low trade prices, and number of trades.
+- Trade history can be exported as a CSV file.
 
-## Sample Login Credentials
-- **User:**
-  - Email: user@example.com
-  - Password: password123
-- **Admin:**
-  - Email: admin@example.com
-  - Password: admin123
+## Tests
 
-## How the Order Matching Works
-The matching engine processes orders based on price-time priority:
-- **BUY Orders:** Highest price first, then earliest timestamp.
-- **SELL Orders:** Lowest price first, then earliest timestamp.
+```powershell
+mvn test
+```
 
-A trade occurs when the best BUY price is greater than or equal to the best SELL price. The trade price is determined by the resting/older order's price.
-
-## Price-Time Priority Explanation
-- **BUY Orders:** Prioritize higher prices; if prices are equal, prioritize the earliest time.
-- **SELL Orders:** Prioritize lower prices; if prices are equal, prioritize the earliest time.
-
-## Partial Order Matching
-The system supports partial fills, allowing for trades to execute even when the entire order quantity isn't matched.
-
-## Portfolio Management
-Users can view their holdings, including stock quantities and average prices.
-
-## Transaction Management
-All transactions are recorded in the database, allowing users to export their transaction history.
-
-## Multithreading
-The application supports concurrent order processing to simulate multiple users placing orders simultaneously.
-
-## Java Collections Usage
-Utilizes various Java collections for managing orders, stocks, and transactions efficiently.
-
-## Streams and Lambda Usage
-Java Streams and Lambda expressions are used for processing collections and enhancing code readability.
-
-## JDBC Usage
-JDBC is used for database interactions, ensuring data persistence and retrieval.
-
-## JavaFX Usage
-JavaFX is used for creating a responsive and modern GUI for user interactions.
-
-## File Handling
-The application allows users to export their transaction history to a CSV file using Java file handling APIs.
-
-## Exception Handling
-Custom exceptions are implemented to handle various error scenarios gracefully.
-
-## Team Member Responsibilities
-- **Member 1:** Core business logic, order book, matching engine, portfolio, trades, validation, exceptions, and concurrency.
-- **Member 2:** Database, JDBC, DAO layer, JavaFX GUI, controllers, and file export.
+The automated tests cover order price/time priority, partial fills, multiple matches, and stock-specific matching. A configured and running MySQL instance is required to run the application, but not the unit tests.

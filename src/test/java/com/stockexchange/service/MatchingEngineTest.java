@@ -326,4 +326,26 @@ public class MatchingEngineTest {
             trade.getPrice()
         );
     }
+
+    @Test
+    public void testOrdersForDifferentStocksDoNotMatch() {
+        Order buyOrder = new Order(
+            1, 1, 1, OrderType.BUY, 10, 10,
+            new BigDecimal("500"), LocalDateTime.now().minusMinutes(1), OrderStatus.PENDING
+        );
+        Order unrelatedSellOrder = new Order(
+            2, 2, 2, OrderType.SELL, 10, 10,
+            new BigDecimal("490"), LocalDateTime.now(), OrderStatus.PENDING
+        );
+
+        matchingEngine.processOrder(buyOrder);
+        assertTrue(matchingEngine.processOrder(unrelatedSellOrder).isEmpty());
+
+        Order matchingSellOrder = new Order(
+            3, 3, 1, OrderType.SELL, 10, 10,
+            new BigDecimal("490"), LocalDateTime.now(), OrderStatus.PENDING
+        );
+        assertEquals(1, matchingEngine.processOrder(matchingSellOrder).size());
+        assertEquals(OrderStatus.PENDING, unrelatedSellOrder.getStatus());
+    }
 }

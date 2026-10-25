@@ -8,29 +8,34 @@ import com.stockexchange.model.enums.OrderType;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class MatchingEngine {
 
     private final OrderBook orderBook;
+    private final Map<Integer, OrderBook> stockOrderBooks = new HashMap<>();
     private int tradeCounter = 1;
 
     public MatchingEngine(OrderBook orderBook) {
         this.orderBook = orderBook;
     }
 
-    public List<Trade> processOrder(Order order) {
+    public synchronized List<Trade> processOrder(Order order) {
+        OrderBook activeBook = stockOrderBooks.computeIfAbsent(order.getStockId(),
+                stockId -> stockOrderBooks.isEmpty() ? orderBook : new OrderBook());
         if (order.getOrderType() == OrderType.BUY) {
-            orderBook.addBuyOrder(order);
+            activeBook.addBuyOrder(order);
         } else {
-            orderBook.addSellOrder(order);
+            activeBook.addSellOrder(order);
         }
 
         List<Trade> trades = new ArrayList<>();
 
         while (true) {
-            Order bestBuy = orderBook.getBestBuyOrder();
-            Order bestSell = orderBook.getBestSellOrder();
+            Order bestBuy = activeBook.getBestBuyOrder();
+            Order bestSell = activeBook.getBestSellOrder();
 
             if (bestBuy == null || bestSell == null) {
                 break;
@@ -71,10 +76,10 @@ public class MatchingEngine {
 
             // Remove completed orders
             if (bestBuy.getRemainingQuantity() == 0) {
-                orderBook.removeBuyOrder(bestBuy);
+                activeBook.removeBuyOrder(bestBuy);
             }
             if (bestSell.getRemainingQuantity() == 0) {
-                orderBook.removeSellOrder(bestSell);
+                activeBook.removeSellOrder(bestSell);
             }
         }
 

@@ -74,6 +74,7 @@ CREATE TABLE transactions (
     stock_id INT NOT NULL,
     transaction_type ENUM('BUY', 'SELL') NOT NULL,
     quantity INT NOT NULL,
+    price DECIMAL(19,4) NOT NULL,
     amount DECIMAL(19,4) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id),

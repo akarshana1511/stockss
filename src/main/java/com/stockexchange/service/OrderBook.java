@@ -1,11 +1,9 @@
 package com.stockexchange.service;
 
 import com.stockexchange.model.Order;
-import com.stockexchange.model.enums.OrderStatus;
 import com.stockexchange.model.enums.OrderType;
 
 import java.util.*;
-import java.util.concurrent.PriorityBlockingQueue;
 
 public class OrderBook {
 
@@ -30,41 +28,41 @@ public class OrderBook {
         });
     }
 
-    public void addBuyOrder(Order order) {
+    public synchronized void addBuyOrder(Order order) {
         if (order.getOrderType() != OrderType.BUY) {
             throw new IllegalArgumentException("Order is not a BUY order");
         }
         buyOrders.add(order);
     }
 
-    public void addSellOrder(Order order) {
+    public synchronized void addSellOrder(Order order) {
         if (order.getOrderType() != OrderType.SELL) {
             throw new IllegalArgumentException("Order is not a SELL order");
         }
         sellOrders.add(order);
     }
 
-    public Order getBestBuyOrder() {
+    public synchronized Order getBestBuyOrder() {
         return buyOrders.peek();
     }
 
-    public Order getBestSellOrder() {
+    public synchronized Order getBestSellOrder() {
         return sellOrders.peek();
     }
 
-    public boolean removeBuyOrder(Order order) {
+    public synchronized boolean removeBuyOrder(Order order) {
         return buyOrders.remove(order);
     }
 
-    public boolean removeSellOrder(Order order) {
+    public synchronized boolean removeSellOrder(Order order) {
         return sellOrders.remove(order);
     }
 
-    public List<Order> getBuyOrders() {
+    public synchronized List<Order> getBuyOrders() {
         return new ArrayList<>(buyOrders);
     }
 
-    public List<Order> getSellOrders() {
+    public synchronized List<Order> getSellOrders() {
         return new ArrayList<>(sellOrders);
     }
 }
